@@ -1,0 +1,25 @@
+let ParamUPN = "UserToLookup@Company.com";
+let Data =
+SigninLogs
+| where TimeGenerated between ((ago(1d) - 1d) .. (now() + 1d))
+| extend identitydata = replace_string(tostring(split(ParamUPN, "@")[0]), ".", " ")
+| where UserPrincipalName in (ParamUPN) or AlternateSignInName in (ParamUPN) or Identity == identitydata
+| extend AuthenticationDetails = iff(isempty(AuthenticationDetails), todynamic('[{"dummy" : ""}]'), todynamic(AuthenticationDetails))
+;
+Data
+| extend Geolocation = strcat(Location, iff(isnotempty(tostring(LocationDetails.state)), "\\", ""), tostring(LocationDetails.state), iff(isnotempty(tostring(LocationDetails.city)), "\\", ""), tostring(LocationDetails.city))
+| extend loginresult = strcat(ResultType, "= ", iff(isnotempty(ResultDescription), ResultDescription, "Successful login"))
+| extend OS = iff(DeviceDetail has "displayName", strcat(DeviceDetail.displayName,"\\",DeviceDetail.operatingSystem), tostring(DeviceDetail.operatingSystem)), Browser = tostring(DeviceDetail.browser)
+| extend Risk = strcat(RiskLevelDuringSignIn, "- ", RiskDetail, "- ", todynamic(RiskEventTypes)[0], "- ", RiskState)
+| join (
+    Data 
+    | project AuthenticationDetails, TimeGenerated, Identity, UserPrincipalName
+    | union (Data | mv-expand AuthenticationDetails)
+    | summarize arg_max(TimeGenerated, *) by TimeGenerated, Identity, UserPrincipalName
+    | extend AutMethod = tostring(AuthenticationDetails.authenticationMethod), AuthMethodDetail = tostring(AuthenticationDetails.authenticationMethodDetail), AuthStep = tostring(AuthenticationDetails.authenticationStepRequirement), Successful = tostring(AuthenticationDetails.succeeded) 
+    | project-away AuthenticationDetails
+    | summarize AutMethods=make_set(AutMethod), AuthMethodDetails=make_set(AuthMethodDetail), AuthSteps=make_set(AuthStep) by Successful, Identity, TimeGenerated, UserPrincipalName
+    ) on Identity, UserPrincipalName, TimeGenerated | project-away AuthenticationDetails, AuthenticationProcessingDetails
+    | project TimeGenerated, Geolocation, IPAddress, AppDisplayName, loginresult, Identity, Risk, OS, Browser,AutMethods, AuthMethodDetails, AuthSteps, Successful
+| project-reorder TimeGenerated, Geolocation, IPAddress, Identity, AppDisplayName, loginresult, OS, Browser, Risk, AutMethods, AuthMethodDetails, AuthSteps, Successful
+| order by TimeGenerated, Identity, Geolocation desc
